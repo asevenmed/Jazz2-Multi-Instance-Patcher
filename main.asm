@@ -31,47 +31,13 @@ section '.bss' data readable writeable
 
 section '.code' code readable executable
 
-proc IsPIDPatched, pid
-    push    ebx ecx edx
-    xor     ecx, ecx
-    mov     ebx, [patchedCount]
-    mov     edx, [pid]
-.loop:
-    cmp     ecx, ebx
-    jge     .no
-    cmp     dword [patchedPIDs + ecx*4], edx
-    je      .yes
-    inc     ecx
-    jmp     .loop
-.yes:
-    mov     eax, 1
-    pop     edx ecx ebx
-    ret
-.no:
-    xor     eax, eax
-    pop     edx ecx ebx
-    ret
-endp
-
-proc AddPID, pid
-    push    ebx edx
-    mov     ebx, [patchedCount]
-    cmp     ebx, MAX_PIDS
-    jge     .done
-    mov     edx, [pid]
-    mov     [patchedPIDs + ebx*4], edx
-    inc     dword [patchedCount]
-.done:
-    pop     edx ebx
-    ret
-endp
 
 proc PatchFunction, processId
     locals
         local_hProcess dd ?
     endl
 
-    invoke  OpenProcess, PROCESS_ALL_ACCESS, FALSE, [processId]
+    invoke OpenProcess, PROCESS_VM_OPERATION or PROCESS_VM_WRITE or PROCESS_VM_READ, FALSE, [processId]
     test    eax, eax
     jz      .fail
     mov     [local_hProcess], eax
@@ -97,9 +63,14 @@ proc PatchFunction, processId
 endp
 
 proc MonitorAndPatch
+    locals
+        localIndex dd ?
+    endl
+
     invoke  CreateToolhelp32Snapshot, TH32CS_SNAPPROCESS, 0
     cmp     eax, INVALID_HANDLE_VALUE
     je      .done
+
     mov     [hSnapshot], eax
 
     mov     dword [pe], 296
@@ -113,27 +84,31 @@ proc MonitorAndPatch
     test    eax, eax
     jnz     .next
 
-    push    dword [pe + 8]
-    call    IsPIDPatched
-    add     esp, 4
-    test    eax, eax
-    jnz     .next
+    mov     eax, dword [pe + 8]
+    xor     ecx, ecx
 
+.checkLoop:
+    cmp     ecx, [patchedCount]
+    jge     .notPatched
+    cmp     [patchedPIDs + ecx*4], eax
+    je      .next
+    inc     ecx
+    jmp     .checkLoop
+
+.notPatched:
     invoke  wsprintf, buf, szDetected, dword [pe + 8]
     invoke  lstrlenA, buf
     invoke  WriteConsoleA, [hStdOut], buf, eax, bytesWritten, 0
-
     invoke  Sleep, 50
-
-    push    dword [pe + 8]
-    call    PatchFunction
-    add     esp, 4
+    stdcall PatchFunction, dword [pe + 8]
+    
     test    eax, eax
     jz      .patchFailed
 
-    push    dword [pe + 8]
-    call    AddPID
-    add     esp, 4
+    mov     eax, [patchedCount]
+    mov     ecx, dword [pe + 8]
+    mov     [patchedPIDs + eax*4], ecx
+    inc     dword [patchedCount]
 
     invoke  lstrlenA, szSuccess
     invoke  WriteConsoleA, [hStdOut], szSuccess, eax, bytesWritten, 0
@@ -150,6 +125,7 @@ proc MonitorAndPatch
 
 .close:
     invoke  CloseHandle, [hSnapshot]
+
 .done:
     ret
 endp
